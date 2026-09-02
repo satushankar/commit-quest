@@ -1,0 +1,108 @@
+name: grade
+
+# Runs after validate finishes. This is the half that holds the answer secret,
+# so it deliberately never touches anything from the pull request except the
+# single answer string that validate already extracted.
+
+on:
+  workflow_run:
+    workflows: ["validate"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+concurrency:
+  group: leaderboard
+  cancel-in-progress: false
+
+jobs:
+  grade:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Fetch the validation result
+        uses: actions/download-artifact@v4
+        with:
+          name: submission-result
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check the answer
+        id: check
+        env:
+          FINAL_ANSWER_HASH: ${{ secrets.FINAL_ANSWER_HASH }}
+          FINAL_SALT: ${{ secrets.FINAL_SALT }}
+          DEADLINE: "2026-09-07T15:30:00Z"
+        run: python3 .github/scripts/check_answer.py
+
+      - name: Comment on the pull request
+        uses: actions/github-script@v7
+        env:
+          VERDICT: ${{ steps.check.outputs.verdict }}
+          MESSAGE: ${{ steps.check.outputs.message }}
+          PR_NUMBER: ${{ steps.check.outputs.pr }}
+        with:
+          script: |
+            const pr = Number(process.env.PR_NUMBER);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr,
+              body: process.env.MESSAGE,
+            });
+
+            if (process.env.VERDICT === 'pass') {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr,
+                labels: ['verified'],
+              });
+              try {
+                await github.rest.pulls.merge({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr,
+                  merge_method: 'squash',
+                });
+              } catch (err) {
+                core.warning(`Could not merge #${pr}: ${err.message}`);
+              }
+            }
+
+      - name: Update the leaderboard
+        if: steps.check.outputs.verdict == 'pass'
+        run: |
+          set -e
+          git config user.name "satushankar"
+          git config user.email "krish4632stella@gmail.com"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git reset --hard origin/main
+            python3 .github/scripts/update_leaderboard.py
+            if git diff --quiet -- leaderboard; then
+              echo "already recorded"
+              exit 0
+            fi
+            git add leaderboard
+            git commit -m "record submission from ${{ steps.check.outputs.author }}"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "push rejected, retrying"
+            sleep $((RANDOM % 5 + 2))
+          done
+          echo "could not update leaderboard after 5 attempts" >&2
+          exit 1
+        env:
+          ENTRY_AUTHOR: ${{ steps.check.outputs.author }}
+          ENTRY_PR: ${{ steps.check.outputs.pr }}
+          ENTRY_OPENED_AT: ${{ steps.check.outputs.opened_at }}
+          ENTRY_LATE: ${{ steps.check.outputs.late }}
