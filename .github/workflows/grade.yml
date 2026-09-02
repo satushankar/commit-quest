@@ -1,0 +1,128 @@
+name: grade
+
+# Runs after validate finishes. This is the half that holds the answer secret.
+#
+# Security model: it checks out main (never the pull request), and the only
+# thing it takes from the participant is the single answer string that validate
+# already extracted and capped. It never executes participant code.
+#
+# The merge is pinned to the exact commit validate inspected, so a participant
+# cannot push extra commits between validation and merge.
+
+on:
+  workflow_run:
+    workflows: ["validate"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+concurrency:
+  group: leaderboard
+  cancel-in-progress: false
+
+jobs:
+  grade:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          ref: main
+
+      - name: Fetch the validation result
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: submission-result
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check the answer
+        id: check
+        env:
+          FINAL_ANSWER_HASH: ${{ secrets.FINAL_ANSWER_HASH }}
+          FINAL_SALT: ${{ secrets.FINAL_SALT }}
+          DEADLINE: "2026-09-07T15:30:00Z"
+        run: python3 .github/scripts/check_answer.py
+
+      - name: Comment on the pull request
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.0.1
+        env:
+          VERDICT: ${{ steps.check.outputs.verdict }}
+          MESSAGE: ${{ steps.check.outputs.message }}
+          PR_NUMBER: ${{ steps.check.outputs.pr }}
+          HEAD_SHA: ${{ steps.check.outputs.head_sha }}
+        with:
+          script: |
+            const pr = Number(process.env.PR_NUMBER);
+            if (!Number.isInteger(pr) || pr <= 0) {
+              core.setFailed('bad pull request number from the validation result');
+              return;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr,
+              body: process.env.MESSAGE,
+            });
+
+            if (process.env.VERDICT !== 'pass') {
+              return;
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr,
+              labels: ['verified'],
+            });
+
+            // Pin the merge to the commit validate actually inspected. If the
+            // participant pushed anything after validation, the SHA no longer
+            // matches and GitHub refuses the merge rather than taking code
+            // that was never checked.
+            try {
+              await github.rest.pulls.merge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr,
+                sha: process.env.HEAD_SHA,
+                merge_method: 'squash',
+              });
+            } catch (err) {
+              core.warning(`Could not merge #${pr}: ${err.message}`);
+            }
+
+      - name: Update the leaderboard
+        if: steps.check.outputs.verdict == 'pass'
+        env:
+          ENTRY_AUTHOR: ${{ steps.check.outputs.author }}
+          ENTRY_PR: ${{ steps.check.outputs.pr }}
+          ENTRY_OPENED_AT: ${{ steps.check.outputs.opened_at }}
+          ENTRY_LATE: ${{ steps.check.outputs.late }}
+        run: |
+          set -euo pipefail
+          git config user.name "satushankar"
+          git config user.email "krish4632stella@gmail.com"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git reset --hard origin/main
+            python3 .github/scripts/update_leaderboard.py
+            if git diff --quiet -- leaderboard; then
+              echo "already recorded"
+              exit 0
+            fi
+            git add leaderboard
+            git commit -m "record submission from ${ENTRY_AUTHOR}"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "push rejected, retrying"
+            sleep $((RANDOM % 5 + 2))
+          done
+          echo "could not update leaderboard after 5 attempts" >&2
+          exit 1

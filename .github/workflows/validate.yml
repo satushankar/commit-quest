@@ -1,0 +1,117 @@
+name: validate
+
+# Runs on every pull request, including ones from forks.
+#
+# Security model: this job has a read-only token, no secrets, and it NEVER
+# checks out or executes anything from the pull request. It reads the diff
+# through the API, decides whether the submission is shaped correctly, and
+# hands the result to the grade workflow as an artifact.
+#
+# Anything changed here must preserve those three properties.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check-shape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect the pull request
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.0.1
+        with:
+          script: |
+            const fs = require('fs');
+            const pr = context.payload.pull_request;
+            const author = pr.user.login;
+
+            // Everything that reaches the grader is sanitised here. Filenames
+            // come from the pull request and are attacker-controlled, so strip
+            // control characters and cap the length before they go anywhere
+            // near a workflow output.
+            const clean = (s) => String(s).replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 200);
+
+            const result = {
+              pr: pr.number,
+              author: author,
+              head_sha: pr.head.sha,
+              opened_at: pr.created_at,
+              status: 'invalid',
+              reason: '',
+              answer: '',
+            };
+
+            let files = [];
+            try {
+              files = await github.paginate(
+                github.rest.pulls.listFiles,
+                { owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number }
+              );
+            } catch (err) {
+              result.reason = `Could not read the file list for this pull request (${clean(err.message)}).`;
+              fs.writeFileSync('result.json', JSON.stringify(result, null, 2));
+              core.setFailed(err.message);
+              return;
+            }
+
+            const expected = `submissions/${author}.md`;
+
+            if (files.length === 0) {
+              result.reason = 'This pull request does not change any files.';
+            } else if (files.length > 1) {
+              const list = files.slice(0, 10).map(f => `\`${clean(f.filename)}\``).join(', ');
+              result.reason =
+                `This pull request changes ${files.length} files: ${list}\n\n` +
+                `It should change exactly one: \`${expected}\``;
+            } else if (files[0].filename !== expected) {
+              result.reason =
+                `The file in this pull request is \`${clean(files[0].filename)}\`, but it needs to be ` +
+                `\`${expected}\` - named after the account that opened the pull request.`;
+            } else {
+              let content = '';
+              try {
+                const res = await github.rest.repos.getContent({
+                  owner: pr.head.repo.owner.login,
+                  repo: pr.head.repo.name,
+                  path: expected,
+                  ref: pr.head.sha,
+                });
+                if (res.data.size > 65536) {
+                  throw new Error('file is too large');
+                }
+                content = Buffer.from(res.data.content, 'base64').toString('utf8');
+              } catch (err) {
+                result.reason = `Could not read \`${expected}\` from your branch.`;
+              }
+
+              if (!result.reason) {
+                const match = content.match(/^\s*[-*]?\s*Answer\s*:\s*(.+?)\s*$/im);
+                if (!match) {
+                  result.reason =
+                    'Could not find an answer line in your file. It needs a line that looks ' +
+                    'exactly like this:\n\n    - Answer: your-answer-here\n\n' +
+                    'See `submissions/README.md` for the format.';
+                } else {
+                  result.status = 'parsed';
+                  // The answer is only ever compared against a hash. Cap it so a
+                  // huge string cannot be used to abuse the grader.
+                  result.answer = match[1].trim().slice(0, 200);
+                }
+              }
+            }
+
+            fs.writeFileSync('result.json', JSON.stringify(result, null, 2));
+            core.info(`status=${result.status} author=${result.author} pr=${result.pr}`);
+
+      - name: Hand the result to the grader
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: submission-result
+          path: result.json
+          retention-days: 3
