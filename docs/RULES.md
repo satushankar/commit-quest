@@ -6,15 +6,15 @@ Everything is IST.
 
 | When | What |
 |---|---|
-| Thu 4 Sep, 7:00 pm | Live Git session (offline). Everything you need is covered here. |
-| Thu 4 Sep, 8:00 pm | Setup hour. Get Git, Python and a GitHub account working before you leave. |
-| **Thu 4 Sep, 9:00 pm** | **Quest opens.** Repository goes public, fork and start. |
-| Fri 5 Sep, 12:00 pm | Hint drop 1 |
-| Sat 6 Sep, 12:00 pm | Hint drop 2 |
-| **Sat 6 Sep, 9:00 pm** | **Speed bonus cutoff** - finish by now for the bonus |
-| Sun 7 Sep, 12:00 pm | Hint drop 3 |
-| **Sun 7 Sep, 9:00 pm** | **Hard deadline.** Pull Requests opened after this do not count. |
-| Mon 8 Sep | Results and prizes |
+| Fri 4 Sep, 7:00 pm | Live Git session (offline). Everything you need is covered here. |
+| Fri 4 Sep, 8:00 pm | Setup hour. Get Git, Python and a GitHub account working before you leave. |
+| **Fri 4 Sep, 9:00 pm** | **Quest opens.** Repository goes public, fork and start. |
+| Sat 5 Sep, 12:00 pm | Hint drop 1 |
+| Sun 6 Sep, 12:00 pm | Hint drop 2 |
+| **Sun 6 Sep, 9:00 pm** | **Speed bonus cutoff** - finish by now for the bonus |
+| Mon 7 Sep, 12:00 pm | Hint drop 3 |
+| **Mon 7 Sep, 9:00 pm** | **Hard deadline.** Pull Requests opened after this do not count. |
+| Tue 8 Sep | Results and prizes |
 
 ## Scoring
 
