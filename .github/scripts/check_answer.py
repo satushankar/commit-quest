@@ -3,20 +3,39 @@
 
 The answer hash and its salt come from repository secrets, never from a file in
 this repository, so nobody can pull the answer out of the history.
+
+Everything in result.json originates from a pull request, so it is treated as
+hostile input: values are sanitised before they become workflow outputs, and
+the multi-line delimiter is random so a crafted value cannot close it early and
+inject an output of its own.
 """
 
 import hashlib
 import json
 import os
+import re
+import secrets
 import sys
 
 DEADLINE = os.environ.get("DEADLINE", "")
+CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def out(key, value):
-    with open(os.environ["GITHUB_OUTPUT"], "a") as handle:
-        if "\n" in str(value):
-            handle.write("%s<<__EOF__\n%s\n__EOF__\n" % (key, value))
+    """Write a workflow output, safely.
+
+    Single-line values are stripped of newlines entirely. Multi-line values get
+    a random delimiter, which is what stops a crafted filename or answer from
+    closing the heredoc and setting outputs of its own (verdict=pass, say).
+    """
+    value = CONTROL.sub(" ", str(value))
+    path = os.environ["GITHUB_OUTPUT"]
+    with open(path, "a") as handle:
+        if "\n" in value:
+            delimiter = "EOF_%s" % secrets.token_hex(16)
+            while delimiter in value:
+                delimiter = "EOF_%s" % secrets.token_hex(16)
+            handle.write("%s<<%s\n%s\n%s\n" % (key, delimiter, value, delimiter))
         else:
             handle.write("%s=%s\n" % (key, value))
 
@@ -25,21 +44,41 @@ def main():
     with open("result.json") as handle:
         result = json.load(handle)
 
-    author = result["author"]
-    pr = result["pr"]
-    opened_at = result.get("opened_at", "")
+    # Shape checks. A malformed artifact means something is wrong upstream, and
+    # the safe response is to refuse rather than to guess.
+    author = str(result.get("author", ""))
+    if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", author):
+        print("refusing: implausible author %r" % author, file=sys.stderr)
+        return 1
+
+    try:
+        pr = int(result.get("pr"))
+    except (TypeError, ValueError):
+        print("refusing: bad pull request number", file=sys.stderr)
+        return 1
+    if pr <= 0:
+        print("refusing: bad pull request number", file=sys.stderr)
+        return 1
+
+    head_sha = str(result.get("head_sha", ""))
+    if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+        print("refusing: bad head sha", file=sys.stderr)
+        return 1
+
+    opened_at = str(result.get("opened_at", ""))[:32]
     late = bool(DEADLINE and opened_at and opened_at > DEADLINE)
 
     out("pr", pr)
     out("author", author)
+    out("head_sha", head_sha)
     out("opened_at", opened_at)
     out("late", "yes" if late else "no")
 
-    if result["status"] != "parsed":
+    if result.get("status") != "parsed":
         out("verdict", "fail")
         out("message",
             "Not quite - this pull request is not shaped right yet.\n\n"
-            + result["reason"]
+            + str(result.get("reason", ""))[:1000]
             + "\n\nFix it, commit, and push to the same branch. This same pull "
               "request gets checked again automatically. No need to open a new one.")
         return 0
@@ -50,10 +89,12 @@ def main():
         print("FINAL_ANSWER_HASH is not set", file=sys.stderr)
         return 1
 
-    given = result["answer"].strip().lower()
+    given = str(result.get("answer", "")).strip().lower()[:200]
     digest = hashlib.sha256((given + salt).encode("utf-8")).hexdigest()
 
-    if digest != expected:
+    # Constant-time comparison. The hash is not a password, but there is no
+    # reason to leak timing on it either.
+    if not secrets.compare_digest(digest, expected):
         out("verdict", "fail")
         out("message",
             "That answer is not the one.\n\n"

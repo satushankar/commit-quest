@@ -7,6 +7,8 @@ time, so concurrent merges cannot corrupt it.
 
 import json
 import os
+import re
+import sys
 
 DATA = "leaderboard/results.json"
 PAGE = "leaderboard/README.md"
@@ -24,6 +26,13 @@ def load():
 def main():
     entries = load()
     author = os.environ["ENTRY_AUTHOR"]
+
+    # This value ends up in a committed file and a commit message. GitHub
+    # usernames cannot contain anything exotic, so anything that does not look
+    # like one means something upstream is wrong and we stop rather than write it.
+    if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", author):
+        print("refusing to record implausible author %r" % author, file=sys.stderr)
+        return 1
 
     if not any(e["author"] == author for e in entries):
         entries.append({
@@ -65,7 +74,8 @@ def main():
 
     with open(PAGE, "w") as handle:
         handle.write("\n".join(lines))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
