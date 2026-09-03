@@ -57,7 +57,7 @@ out an old branch or an old commit and the decoder says the file is missing, run
 
 **Stages 1 to 6:** submit each answer through the form as you get it.
 
-> Form: FORM_LINK_HERE
+> Form: https://docs.google.com/forms/d/e/1FAIpQLSfUjKyO6nujNiBJRF26UZhkSqZjBFtxdCjqNcnOLNMlOjUFPQ/viewform
 
 The form asks which commands you used. Answer it honestly - it is worth points,
 and it is how we award the clean-process bonus.
